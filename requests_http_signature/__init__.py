@@ -34,8 +34,13 @@ class Crypto:
             assert signature == hmac.new(key, string_to_sign, digestmod=hashlib.sha256).digest()
         else:
             key = self.load_pem_public_key(key, backend=self.default_backend())
-            hasher = self.SHA1() if self.algorithm.endswith("sha1") else self.SHA256()
-            if self.algorithm == "ecdsa-sha256":
+            if self.algorithm.endswith("sha1"):
+                hasher = self.SHA1()
+            elif self.algorithm.endswith("sha256"):
+                hasher = self.SHA256()
+            else:
+                hasher = self.SHA512()
+            if self.algorithm.startswith("ecdsa"):
                 key.verify(signature, string_to_sign, self.ec.ECDSA(hasher))
             else:
                 key.verify(signature, string_to_sign, self.PKCS1v15(), hasher)
@@ -48,6 +53,8 @@ class HTTPSignatureAuth(requests.auth.AuthBase):
         "rsa-sha512",
         "hmac-sha256",
         "ecdsa-sha256",
+        "hs2019",
+        "ecdsa-sha512"
     }
 
     def __init__(self, key, key_id, algorithm="hmac-sha256", headers=None, passphrase=None, expires_in=None):
@@ -133,7 +140,7 @@ class HTTPSignatureAuth(requests.auth.AuthBase):
         return {i.split("=", 1)[0]: i.split("=", 1)[1].strip('"') for i in sig_struct.split(",")}
 
     @classmethod
-    def verify(self, request, key_resolver):
+    def verify(self, request, key_resolver, algorithm_resolver = None):
         assert "Authorization" in request.headers, "No Authorization header found"
         msg = 'Unexpected scheme found in Authorization header (expected "Signature")'
         assert request.headers["Authorization"].startswith("Signature "), msg
@@ -148,8 +155,14 @@ class HTTPSignatureAuth(requests.auth.AuthBase):
         headers = sig_struct.get("headers", "date").split(" ")
         sig = base64.b64decode(sig_struct["signature"])
         sts = self.get_string_to_sign(request, headers, created_timestamp, expires_timestamp=expires_timestamp)
-        key = key_resolver(key_id=sig_struct["keyId"], algorithm=sig_struct["algorithm"])
-        Crypto(sig_struct["algorithm"]).verify(sig, sts, key)
+        algorithm = sig_struct["algorithm"]
+        if algorithm == "hs2019":
+            assert algorithm_resolver != None
+            algorithm = algorithm_resolver(key_id=sig_struct["keyId"])
+            assert algorithm in self.known_algorithms
+            assert algorithm != "hs2019"
+        key = key_resolver(key_id=sig_struct["keyId"], algorithm=algorithm)
+        Crypto(algorithm).verify(sig, sts, key)
 
 class HTTPSignatureHeaderAuth(HTTPSignatureAuth):
     """
